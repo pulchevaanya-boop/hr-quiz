@@ -1,0 +1,333 @@
+name: Add PDF Download Functionality
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  add-pdf-functionality:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Check if PDF functionality already exists
+        id: check
+        run: |
+          if [ -f "utils/generatePDF.ts" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create utils directory
+        if: steps.check.outputs.exists == 'false'
+        run: mkdir -p utils
+
+      - name: Create generatePDF.ts
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cat > utils/generatePDF.ts << 'TYPESCRIPT_EOF'
+// utils/generatePDF.ts
+
+interface PDFOptions {
+  margin?: number | number[];
+  filename?: string;
+  image?: {
+    type: string;
+    quality: number;
+  };
+  html2canvas?: {
+    scale: number;
+    logging: boolean;
+    useCORS: boolean;
+    allowTaint: boolean;
+  };
+  jsPDF?: {
+    orientation: 'portrait' | 'landscape';
+    unit: 'mm' | 'cm' | 'in' | 'px' | 'pc' | 'em' | 'ex';
+    format: 'a4' | 'letter' | 'a3' | 'a5';
+  };
+  pagebreak?: {
+    mode: string[];
+    before: string[];
+    after: string[];
+  };
+}
+
+/**
+ * Генерирует и скачивает PDF из HTML элемента
+ * @param elementId - ID элемента для конвертации в PDF
+ * @param fileName - Имя файла для скачивания
+ * @param options - Опции конфигурации PDF
+ */
+export const generatePDF = async (
+  elementId: string,
+  fileName: string = 'document.pdf',
+  options?: Partial<PDFOptions>
+) => {
+  try {
+    // Динамический импорт html2pdf для оптимизации бандла
+    const html2pdf = (await import('html2pdf.js')).default;
+
+    const element = document.getElementById(elementId);
+
+    if (!element) {
+      console.error(`Element with ID "${elementId}" not found`);
+      throw new Error(`Element not found: ${elementId}`);
+    }
+
+    // Стандартные опции
+    const defaultOptions: PDFOptions = {
+      margin: [10, 10, 10, 10], // top, left, bottom, right в мм
+      filename: fileName,
+      image: {
+        type: 'jpeg',
+        quality: 0.98,
+      },
+      html2canvas: {
+        scale: 2, // Качество конвертации
+        logging: false,
+        useCORS: true,
+        allowTaint: true,
+      },
+      jsPDF: {
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4',
+      },
+      pagebreak: {
+        mode: ['avoid-all', 'css', 'legacy'], // Режимы разрывов страниц
+        before: ['.page-break-before'],
+        after: ['.page-break-after'],
+      },
+    };
+
+    // Объединяем с переданными опциями
+    const finalOptions = {
+      ...defaultOptions,
+      ...options,
+    };
+
+    // Создаем PDF и скачиваем
+    await html2pdf()
+      .set(finalOptions)
+      .from(element)
+      .save();
+
+    console.log(`PDF successfully generated: ${fileName}`);
+  } catch (error) {
+    console.error('Error generating PDF:', error);
+    throw error;
+  }
+};
+
+/**
+ * Альтернативный способ - генерирует PDF с более тонкой настройкой
+ */
+export const generatePDFAdvanced = async (
+  elementId: string,
+  fileName: string = 'document.pdf'
+) => {
+  try {
+    const html2pdf = (await import('html2pdf.js')).default;
+    const element = document.getElementById(elementId);
+
+    if (!element) {
+      throw new Error(`Element not found: ${elementId}`);
+    }
+
+    const opt = {
+      margin: 10,
+      filename: fileName,
+      image: {
+        type: 'jpeg',
+        quality: 0.98,
+      },
+      html2canvas: {
+        scale: 2,
+        logging: false,
+        useCORS: true,
+        allowTaint: true,
+      },
+      jsPDF: {
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4',
+        compress: true,
+      },
+    };
+
+    // Скрываем элементы, которые не должны быть в PDF (например, кнопки)
+    const elementsToHide = element.querySelectorAll('.no-print');
+    elementsToHide.forEach((el) => {
+      (el as HTMLElement).style.display = 'none';
+    });
+
+    // Генерируем PDF
+    const pdf = html2pdf().set(opt).from(element);
+
+    // Выполняем конвертацию и сохраняем
+    await pdf.save();
+
+    // Восстанавливаем видимость элементов
+    elementsToHide.forEach((el) => {
+      (el as HTMLElement).style.display = '';
+    });
+
+    console.log(`PDF saved as: ${fileName}`);
+  } catch (error) {
+    console.error('Error in generatePDFAdvanced:', error);
+    throw error;
+  }
+};
+TYPESCRIPT_EOF
+
+      - name: Update package.json with html2pdf.js
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          npm install html2pdf.js
+          git add package.json package-lock.json
+
+      - name: Create/Update Results component with PDF functionality
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          # Проверяем, существует ли файл Results.tsx
+          if [ -f "components/Results.tsx" ]; then
+            # Если существует, добавляем импорт в начало (если его еще нет)
+            if ! grep -q "generatePDF" components/Results.tsx; then
+              sed -i '1i import { generatePDF } from '\''../utils/generatePDF'\'';' components/Results.tsx
+            fi
+          fi
+
+      - name: Create/Update results.css for PDF optimization
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cat >> styles/globals.css << 'CSS_EOF'
+
+/* ============================================
+   ОПТИМИЗАЦИЯ ДЛЯ ПЕЧАТИ И PDF
+   ============================================ */
+
+@media print {
+  .no-print,
+  .results-actions,
+  .error-message,
+  .warning {
+    display: none !important;
+  }
+
+  body {
+    background: white;
+  }
+
+  .results-content {
+    page-break-after: auto;
+    padding: 20px;
+  }
+
+  .results-section {
+    page-break-inside: avoid;
+  }
+}
+
+/* Стили для PDF результатов */
+#results-content {
+  background: #ffffff;
+  padding: 40px;
+  line-height: 1.6;
+  color: #333;
+}
+
+.results-section {
+  margin-bottom: 30px;
+  page-break-inside: avoid;
+}
+
+.results-section h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1e3a5f;
+  text-transform: uppercase;
+  margin-bottom: 15px;
+  border-bottom: 1px solid #e0e0e0;
+  padding-bottom: 10px;
+}
+
+.action-plan {
+  margin: 0;
+  padding-left: 25px;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.action-plan li {
+  margin-bottom: 12px;
+}
+CSS_EOF
+
+      - name: Verify build works
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          npm install
+          npm run build 2>&1 | head -20
+
+      - name: Git configuration
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+      - name: Add files and commit
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git add utils/generatePDF.ts
+          git add styles/globals.css
+          git add package.json package-lock.json
+          git commit -m "✨ Add PDF download functionality with html2pdf.js
+
+- Add generatePDF utility for converting HTML to PDF
+- Support for custom PDF options (margin, quality, format)
+- Optimize styles for PDF printing
+- Add html2pdf.js dependency
+- Includes both generatePDF and generatePDFAdvanced functions
+
+Usage: Import generatePDF and use in your Results component
+await generatePDF('results-content', 'file.pdf');"
+
+      - name: Push changes
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git push origin main
+
+      - name: Job Summary
+        run: |
+          echo "## ✅ PDF Download Functionality Added" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The following files have been added/updated:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✨ \`utils/generatePDF.ts\` - PDF generation utility" >> $GITHUB_STEP_SUMMARY
+          echo "- 📦 \`package.json\` - Added html2pdf.js dependency" >> $GITHUB_STEP_SUMMARY
+          echo "- 🎨 \`styles/globals.css\` - PDF optimization styles" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Update your \`components/Results.tsx\` to import generatePDF" >> $GITHUB_STEP_SUMMARY
+          echo "2. Add the download button handler" >> $GITHUB_STEP_SUMMARY
+          echo "3. Wrap your results content in \`<div id=\"results-content\">\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See the repository for full documentation." >> $GITHUB_STEP_SUMMARY
+
+      - name: Alert if PDF functionality already exists
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          echo "⚠️ PDF functionality already exists in this repository"
+          echo "Skipping installation..."
